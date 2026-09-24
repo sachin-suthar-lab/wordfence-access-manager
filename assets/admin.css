@@ -1,0 +1,265 @@
+/**
+ * Wordfence → Access Manager admin screen. Loaded on this screen only.
+ *
+ * @package Wordfence_Access_Manager
+ */
+
+.wfam-intro {
+	max-width: 900px;
+}
+
+.wfam-card {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+	margin: 16px 0;
+	padding: 16px 20px;
+}
+
+.wfam-card > h2:first-child {
+	margin-top: 0;
+}
+
+.wfam-notices .notice {
+	margin: 12px 0 0;
+}
+
+.wfam-muted {
+	color: #646970;
+	font-size: 12px;
+}
+
+/* Filters */
+.wfam-filters {
+	align-items: flex-end;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.wfam-filters label,
+.wfam-add-form label,
+.wfam-dialog-fields label {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.wfam-filters label > span,
+.wfam-add-form label > span,
+.wfam-dialog-fields label > span {
+	font-size: 12px;
+	font-weight: 600;
+}
+
+/* Tables */
+.wfam-table-wrap {
+	min-height: 60px;
+	overflow-x: auto;
+	position: relative;
+}
+
+.wfam-table td {
+	vertical-align: top;
+}
+
+.wfam-table code {
+	word-break: break-all;
+}
+
+.wfam-reason {
+	display: inline-block;
+	max-width: 280px;
+}
+
+.wfam-empty {
+	color: #646970;
+	padding: 16px !important;
+	text-align: center;
+}
+
+.wfam-loading {
+	align-items: center;
+	background: rgba(255, 255, 255, 0.65);
+	display: none;
+	inset: 0;
+	justify-content: center;
+	position: absolute;
+}
+
+.wfam-loading .spinner {
+	float: none;
+	margin: 0;
+}
+
+.is-loading > .wfam-loading {
+	display: flex;
+}
+
+.is-loading > table {
+	opacity: 0.6;
+}
+
+.wfam-badge {
+	border-radius: 10px;
+	display: inline-block;
+	font-size: 12px;
+	padding: 1px 8px;
+	white-space: nowrap;
+}
+
+.wfam-badge.is-yes {
+	background: #edfaef;
+	color: #00631a;
+}
+
+.wfam-badge.is-no {
+	background: #f0f0f1;
+	color: #50575e;
+}
+
+.wfam-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.wfam-pagination {
+	align-items: center;
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	margin-top: 10px;
+}
+
+/* Lower cards */
+.wfam-grid {
+	display: grid;
+	gap: 16px;
+	grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr);
+}
+
+.wfam-grid > .wfam-card {
+	margin: 0;
+}
+
+.wfam-add-form label {
+	margin-bottom: 10px;
+	max-width: 420px;
+}
+
+.wfam-add-form input[type="text"],
+.wfam-add-form select {
+	width: 100%;
+}
+
+.wfam-add-form label.wfam-check {
+	align-items: flex-start;
+	flex-direction: row;
+	gap: 6px;
+}
+
+.wfam-add-form label.wfam-check > span {
+	font-weight: 400;
+}
+
+.wfam-audit > summary {
+	cursor: pointer;
+	font-size: 1.3em;
+	font-weight: 600;
+}
+
+.wfam-audit[open] > summary {
+	margin-bottom: 12px;
+}
+
+/* Confirmation dialog */
+.wfam-dialog {
+	border: 0;
+	border-radius: 6px;
+	box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+	max-width: 520px;
+	padding: 20px 24px;
+	width: calc(100% - 32px);
+}
+
+.wfam-dialog::backdrop {
+	background: rgba(0, 0, 0, 0.45);
+}
+
+.wfam-dialog h2 {
+	margin-top: 0;
+}
+
+.wfam-dialog .notice {
+	margin: 0 0 12px;
+	padding: 8px 12px;
+}
+
+.wfam-dialog-fields {
+	display: grid;
+	gap: 10px;
+	margin-bottom: 12px;
+}
+
+.wfam-dialog-fields input,
+.wfam-dialog-fields select {
+	width: 100%;
+}
+
+.wfam-dialog-buttons {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
+.wfam [hidden] {
+	display: none !important;
+}
+
+/* Responsive: stack cells with their column label */
+@media screen and (max-width: 1100px) {
+	.wfam-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+@media screen and (max-width: 782px) {
+	.wfam-table thead {
+		display: none;
+	}
+
+	.wfam-table tr {
+		border-bottom: 1px solid #dcdcde;
+		display: block;
+		padding: 6px 0;
+	}
+
+	.wfam-table td {
+		display: grid;
+		gap: 8px;
+		grid-template-columns: 38% minmax(0, 1fr);
+		padding: 6px 10px;
+	}
+
+	.wfam-table td::before {
+		content: attr(data-label);
+		font-weight: 600;
+	}
+
+	.wfam-table td.wfam-empty {
+		display: block;
+	}
+
+	.wfam-table td.wfam-empty::before {
+		content: none;
+	}
+
+	.wfam-filters label,
+	.wfam-filters input,
+	.wfam-filters select {
+		width: 100%;
+	}
+}

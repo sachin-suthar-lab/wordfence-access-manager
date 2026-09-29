@@ -30,6 +30,32 @@
 	font-size: 12px;
 }
 
+.wfam-warn {
+	color: #996800;
+	display: block;
+	font-size: 12px;
+	margin-top: 4px;
+}
+
+/* Wordfence settings summary */
+.wfam-settings-list {
+	display: grid;
+	gap: 8px 24px;
+	grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+	margin: 0 0 12px;
+}
+
+.wfam-settings-list li {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+}
+
+.wfam-settings-list span {
+	color: #646970;
+	font-size: 12px;
+}
+
 /* Filters */
 .wfam-filters {
 	align-items: flex-end;
@@ -40,16 +66,15 @@
 }
 
 .wfam-filters label,
-.wfam-add-form label,
-.wfam-dialog-fields label {
+.wfam-dialog-fields label:not(.wfam-radio) {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
 }
 
 .wfam-filters label > span,
-.wfam-add-form label > span,
-.wfam-dialog-fields label > span {
+.wfam-dialog-fields label:not(.wfam-radio) > span,
+.wfam-dialog-fields legend {
 	font-size: 12px;
 	font-weight: 600;
 }
@@ -70,8 +95,8 @@
 }
 
 .wfam-reason {
-	display: inline-block;
-	max-width: 280px;
+	display: block;
+	max-width: 300px;
 }
 
 .wfam-empty {
@@ -102,12 +127,25 @@
 	opacity: 0.6;
 }
 
+.wfam-countdown {
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.wfam-countdown.is-expired {
+	color: #646970;
+}
+
 .wfam-badge {
 	border-radius: 10px;
 	display: inline-block;
 	font-size: 12px;
 	padding: 1px 8px;
-	white-space: nowrap;
+}
+
+.wfam-badge.is-temp {
+	background: #fcf9e8;
+	color: #6e5200;
 }
 
 .wfam-badge.is-yes {
@@ -134,37 +172,6 @@
 	margin-top: 10px;
 }
 
-/* Lower cards */
-.wfam-grid {
-	display: grid;
-	gap: 16px;
-	grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr);
-}
-
-.wfam-grid > .wfam-card {
-	margin: 0;
-}
-
-.wfam-add-form label {
-	margin-bottom: 10px;
-	max-width: 420px;
-}
-
-.wfam-add-form input[type="text"],
-.wfam-add-form select {
-	width: 100%;
-}
-
-.wfam-add-form label.wfam-check {
-	align-items: flex-start;
-	flex-direction: row;
-	gap: 6px;
-}
-
-.wfam-add-form label.wfam-check > span {
-	font-weight: 400;
-}
-
 .wfam-audit > summary {
 	cursor: pointer;
 	font-size: 1.3em;
@@ -180,7 +187,7 @@
 	border: 0;
 	border-radius: 6px;
 	box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
-	max-width: 520px;
+	max-width: 560px;
 	padding: 20px 24px;
 	width: calc(100% - 32px);
 }
@@ -204,9 +211,32 @@
 	margin-bottom: 12px;
 }
 
-.wfam-dialog-fields input,
-.wfam-dialog-fields select {
+.wfam-dialog-fields fieldset {
+	border: 0;
+	margin: 0;
+	padding: 0;
+}
+
+.wfam-expiry-choices {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 16px;
+	margin-top: 6px;
+}
+
+.wfam-radio {
+	align-items: center;
+	display: inline-flex;
+	gap: 4px;
+}
+
+.wfam-dialog-fields input[type="text"],
+.wfam-dialog-fields input[type="datetime-local"] {
 	width: 100%;
+}
+
+.wfam-expiry-preview {
+	margin: 0;
 }
 
 .wfam-dialog-buttons {
@@ -220,12 +250,6 @@
 }
 
 /* Responsive: stack cells with their column label */
-@media screen and (max-width: 1100px) {
-	.wfam-grid {
-		grid-template-columns: minmax(0, 1fr);
-	}
-}
-
 @media screen and (max-width: 782px) {
 	.wfam-table thead {
 		display: none;

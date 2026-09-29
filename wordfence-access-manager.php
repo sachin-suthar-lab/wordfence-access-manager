@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Wordfence Access Manager
- * Description: Adds Wordfence → Access Manager: review blocked login IPs and unblock / allowlist a single trusted IP using Wordfence's own functions.
- * Version: 1.0.0
+ * Description: Adds Wordfence → Access Manager: see who is temporarily locked out by Wordfence's failed-login protection, unblock them, or unblock + allowlist their IP for a limited time. Uses Wordfence's own lockouts, settings and functions.
+ * Version: 1.1.0
  * Author: Sachin Suthar
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WFAM_VERSION', '1.0.0' );
+define( 'WFAM_VERSION', '1.1.0' );
 define( 'WFAM_FILE', __FILE__ );
 define( 'WFAM_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WFAM_URL', plugin_dir_url( __FILE__ ) );

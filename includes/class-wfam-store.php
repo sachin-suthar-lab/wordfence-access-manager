@@ -1,10 +1,9 @@
 <?php
 /**
- * Plugin-owned storage: the registry of allowlist entries added through this
- * helper, and the audit log. Both are plain non-autoloaded options, so the
- * plugin needs no custom tables.
+ * Plugin-owned storage: the registry of TEMPORARY allowlist entries added
+ * through this helper, and the audit log. Plain options, no custom tables.
  *
- * The registry is what makes "Remove" safe: only IPs recorded here can be
+ * The registry is what makes removal safe: only IPs recorded here are ever
  * removed from the Wordfence allowlist by this plugin, so entries an admin
  * added directly in Wordfence are never touched.
  *
@@ -17,19 +16,77 @@ class WFAM_Store {
 
 	const REGISTRY_OPTION = 'wfam_allowlist';
 	const AUDIT_OPTION    = 'wfam_audit';
-	const AUDIT_MAX       = 200;
 
 	/**
-	 * Allowed expiry choices (key => seconds, 0 = never).
+	 * Autoloaded int: timestamp of the earliest helper allowlist expiry (0 =
+	 * none). Lets every request check "is anything due?" without a query.
+	 */
+	const NEXT_EXPIRY_OPTION = 'wfam_next_expiry';
+
+	const AUDIT_MAX = 200;
+
+	/** Shortest custom allowlist period. */
+	const MIN_SECONDS = 300;
+
+	/**
+	 * Preset allowlist periods (key => seconds). There is deliberately no
+	 * "never": every helper allowlist entry expires.
 	 *
 	 * @return array<string, int>
 	 */
-	public static function expiry_choices() {
+	public static function expiry_presets() {
 		return array(
-			'7'     => 7 * DAY_IN_SECONDS,
-			'30'    => 30 * DAY_IN_SECONDS,
-			'never' => 0,
+			'1h'  => HOUR_IN_SECONDS,
+			'4h'  => 4 * HOUR_IN_SECONDS,
+			'24h' => DAY_IN_SECONDS,
+			'7d'  => 7 * DAY_IN_SECONDS,
 		);
+	}
+
+	/**
+	 * Longest allowed custom period (default 30 days).
+	 *
+	 * @return int Seconds.
+	 */
+	public static function max_seconds() {
+		/**
+		 * Filters the longest temporary allowlist period an admin can choose.
+		 *
+		 * @param int $seconds Default 30 days.
+		 */
+		return max( self::MIN_SECONDS, (int) apply_filters( 'wfam_max_allowlist_seconds', 30 * DAY_IN_SECONDS ) );
+	}
+
+	/**
+	 * Resolves the admin's expiry choice to a unix timestamp.
+	 *
+	 * @param string $choice    Preset key or 'custom'.
+	 * @param int    $custom_ts Unix timestamp for 'custom'.
+	 * @return int|WP_Error
+	 */
+	public static function resolve_expiry( $choice, $custom_ts = 0 ) {
+		$presets = self::expiry_presets();
+		if ( isset( $presets[ $choice ] ) ) {
+			return time() + $presets[ $choice ];
+		}
+
+		if ( 'custom' !== $choice ) {
+			return new WP_Error( 'wfam_bad_expiry', __( 'Choose how long the IP should stay allowlisted.', 'wordfence-access-manager' ) );
+		}
+
+		$custom_ts = (int) $custom_ts;
+		if ( $custom_ts < time() + self::MIN_SECONDS ) {
+			return new WP_Error( 'wfam_bad_expiry', __( 'The custom expiry must be at least 5 minutes in the future.', 'wordfence-access-manager' ) );
+		}
+		if ( $custom_ts > time() + self::max_seconds() ) {
+			return new WP_Error(
+				'wfam_bad_expiry',
+				/* translators: %d: number of days. */
+				sprintf( __( 'The custom expiry cannot be more than %d days away.', 'wordfence-access-manager' ), (int) floor( self::max_seconds() / DAY_IN_SECONDS ) )
+			);
+		}
+
+		return $custom_ts;
 	}
 
 	/**
@@ -47,7 +104,7 @@ class WFAM_Store {
 	 *
 	 * @param string $ip         Canonical IP.
 	 * @param string $note       Sanitized admin note.
-	 * @param int    $expires_at Unix timestamp, 0 = never.
+	 * @param int    $expires_at Unix timestamp.
 	 * @return array The stored entry.
 	 */
 	public static function add_entry( $ip, $note, $expires_at ) {
@@ -63,7 +120,7 @@ class WFAM_Store {
 			'expires_at'    => (int) $expires_at,
 		);
 
-		update_option( self::REGISTRY_OPTION, $registry, false );
+		self::save( $registry );
 		return $registry[ $ip ];
 	}
 
@@ -77,8 +134,36 @@ class WFAM_Store {
 		$registry = self::registry();
 		if ( isset( $registry[ $ip ] ) ) {
 			unset( $registry[ $ip ] );
-			update_option( self::REGISTRY_OPTION, $registry, false );
+			self::save( $registry );
 		}
+	}
+
+	/**
+	 * Saves the registry and refreshes the "next expiry" marker.
+	 *
+	 * @param array $registry Registry.
+	 * @return void
+	 */
+	private static function save( array $registry ) {
+		update_option( self::REGISTRY_OPTION, $registry, false );
+
+		$next = 0;
+		foreach ( $registry as $entry ) {
+			$ts = (int) $entry['expires_at'];
+			if ( $ts > 0 && ( 0 === $next || $ts < $next ) ) {
+				$next = $ts;
+			}
+		}
+		update_option( self::NEXT_EXPIRY_OPTION, $next, true );
+	}
+
+	/**
+	 * Earliest pending expiry (0 = none). Autoloaded, so free to read.
+	 *
+	 * @return int
+	 */
+	public static function next_expiry() {
+		return (int) get_option( self::NEXT_EXPIRY_OPTION, 0 );
 	}
 
 	/**
@@ -88,7 +173,7 @@ class WFAM_Store {
 	 * Also fires `wfam_audit` so another logger (e.g. WP Activity
 	 * Log) can pick the event up without changes here.
 	 *
-	 * @param string $action  Machine name, e.g. 'unblock', 'allowlist_add'.
+	 * @param string $action  Machine name, e.g. 'unblock', 'unblock_allowlist'.
 	 * @param string $ip      IP acted on.
 	 * @param string $details Short human-readable detail.
 	 * @return void
@@ -98,7 +183,7 @@ class WFAM_Store {
 		$entry = array(
 			'time'       => time(),
 			'user_id'    => (int) $user->ID,
-			'user_login' => $user->ID ? $user->user_login : 'wp-cron',
+			'user_login' => $user->ID ? $user->user_login : 'system',
 			'action'     => $action,
 			'ip'         => $ip,
 			'details'    => $details,

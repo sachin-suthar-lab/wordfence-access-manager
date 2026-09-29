@@ -7,11 +7,22 @@
  *    Wordfence is inactive or an expected class/method has changed), and
  *  - a future Wordfence API change only needs fixing in one file.
  *
- * Verified against Wordfence 8.2.2. The only Wordfence data this class ever
- * changes is (a) block rows for one explicitly chosen IP, via Wordfence's own
- * wfBlock::unblockIP(), and (b) single-IP entries in the "Allowlisted IP
- * addresses that bypass all rules" setting. It never touches login limits,
- * firewall on/off, lockout durations or any other setting.
+ * Verified against Wordfence 9.0.1 (also 8.2.2).
+ *
+ * How Wordfence failed-login lockouts work (what this plugin builds on):
+ *  - Failures per IP are counted in a transient (wordfence::getLoginFailureCountTransient())
+ *    that lives for "Count failures over what time period" (wfConfig loginSec_countFailMins).
+ *  - At "Lock out after how many login failures" (loginSec_maxFailures), or at once for an
+ *    unknown username when "Immediately lock out invalid usernames" (loginSec_lockInvalidUsers)
+ *    is on, or after loginSec_maxForgotPasswd password-reset attempts, wordfence::lockOutIP()
+ *    creates a wfBlock row of type TYPE_LOCKOUT in the wfBlocks7 table.
+ *  - That row's expiration = blockedTime + wfBlock::lockoutDuration()
+ *    ("Amount of time a user is locked out" = loginSec_lockoutMins * 60).
+ *
+ * This plugin only reads those rows and settings. The only Wordfence data it
+ * changes: it removes lockout rows for one chosen IP (wfBlock::unlockOutIP(),
+ * exactly as Wordfence's own "unlock" does) and adds/removes single-IP entries
+ * in the Wordfence allowlist. It never changes lockout, login or firewall settings.
  *
  * @package Wordfence_Access_Manager
  */
@@ -27,7 +38,7 @@ class WFAM_Wordfence {
 	 */
 	private static $required = array(
 		'wordfence'     => array( 'whitelistIP', 'clearLockoutCounters' ),
-		'wfBlock'       => array( 'allBlocks', 'unblockIP' ),
+		'wfBlock'       => array( 'lockouts', 'lockoutForIP', 'unlockOutIP', 'ipBlocks', 'lockoutDuration' ),
 		'wfConfig'      => array( 'get', 'set' ),
 		'wfUtils'       => array( 'inet_pton', 'inet_ntop', 'getIP', 'subnetContainsIP', 'isPrivateAddress' ),
 		'wfDB'          => array( 'networkTable', 'binaryValueToSQLHex' ),
@@ -35,26 +46,10 @@ class WFAM_Wordfence {
 	);
 
 	/**
-	 * wfBlock type constants this plugin lists (single-IP block types only;
-	 * country and pattern blocks have no single IP and are never touched).
-	 *
-	 * @var string[]
-	 */
-	private static $type_constants = array(
-		'TYPE_LOCKOUT',
-		'TYPE_IP_AUTOMATIC_TEMPORARY',
-		'TYPE_IP_AUTOMATIC_PERMANENT',
-		'TYPE_IP_MANUAL',
-		'TYPE_WFSN_TEMPORARY',
-		'TYPE_RATE_BLOCK',
-		'TYPE_RATE_THROTTLE',
-	);
-
-	/**
 	 * Ranges rejected on top of PHP's private/reserved filter. Includes the
 	 * documentation nets (Wordfence stores its country/pattern block rows
-	 * under 192.0.2.1 / 192.0.2.2, so these must never reach unblockIP()) and
-	 * carrier-grade NAT, which is shared by many unrelated users.
+	 * under 192.0.2.1 / 192.0.2.2) and carrier-grade NAT, which is shared by
+	 * many unrelated users.
 	 *
 	 * @var string[]
 	 */
@@ -97,12 +92,8 @@ class WFAM_Wordfence {
 				}
 			}
 		}
-		if ( class_exists( 'wfBlock' ) ) {
-			foreach ( self::$type_constants as $const ) {
-				if ( ! defined( 'wfBlock::' . $const ) ) {
-					$missing[] = 'wfBlock::' . $const;
-				}
-			}
+		if ( class_exists( 'wfBlock' ) && ! defined( 'wfBlock::TYPE_LOCKOUT' ) ) {
+			$missing[] = 'wfBlock::TYPE_LOCKOUT';
 		}
 
 		return $missing;
@@ -118,43 +109,37 @@ class WFAM_Wordfence {
 	}
 
 	/**
-	 * Map of wfBlock type ID => label shown in the admin screen.
+	 * Wordfence's own brute-force settings, read-only, for display and for
+	 * working out the failure-counting window. Nothing here is ever written.
 	 *
-	 * Our own labels are used because wfBlock::nameForType() groups most
-	 * types as a generic "IP Block".
-	 *
-	 * @return array<int, string>
+	 * @return array{enabled:bool, max_failures:int, max_forgot:int, count_window:int, lockout_seconds:int, lock_invalid:bool}
 	 */
-	public static function type_labels() {
+	public static function lockout_settings() {
 		return array(
-			wfBlock::TYPE_LOCKOUT                => __( 'Login lockout', 'wordfence-access-manager' ),
-			wfBlock::TYPE_IP_AUTOMATIC_TEMPORARY => __( 'Automatic block (temporary)', 'wordfence-access-manager' ),
-			wfBlock::TYPE_IP_AUTOMATIC_PERMANENT => __( 'Automatic block (made permanent)', 'wordfence-access-manager' ),
-			wfBlock::TYPE_IP_MANUAL              => __( 'Manual block', 'wordfence-access-manager' ),
-			wfBlock::TYPE_WFSN_TEMPORARY         => __( 'Wordfence Security Network', 'wordfence-access-manager' ),
-			wfBlock::TYPE_RATE_BLOCK             => __( 'Rate limit block', 'wordfence-access-manager' ),
-			wfBlock::TYPE_RATE_THROTTLE          => __( 'Rate limit throttle', 'wordfence-access-manager' ),
+			'enabled'         => (bool) wfConfig::get( 'loginSecurityEnabled' ),
+			'max_failures'    => (int) wfConfig::get( 'loginSec_maxFailures' ),
+			'max_forgot'      => (int) wfConfig::get( 'loginSec_maxForgotPasswd' ),
+			'count_window'    => (int) wfConfig::get( 'loginSec_countFailMins' ) * 60,
+			'lockout_seconds' => (int) wfBlock::lockoutDuration(),
+			'lock_invalid'    => (bool) wfConfig::get( 'loginSec_lockInvalidUsers' ),
 		);
 	}
 
 	/**
-	 * All active single-IP blocks, read through Wordfence's wfBlock::allBlocks()
-	 * (which already excludes expired rows).
+	 * Active failed-login lockouts, read through Wordfence's wfBlock::lockouts()
+	 * (TYPE_LOCKOUT only; expired rows are already excluded by Wordfence).
 	 *
-	 * @return array[] List of plain arrays (id, type, ip, reason, blocked_time, last_attempt, hits, expiration).
+	 * @return array[] id, ip, reason, blocked_time, last_attempt, hits, expiration.
 	 */
-	public static function get_ip_blocks() {
-		$blocks = wfBlock::allBlocks( true, array_keys( self::type_labels() ) );
-		$out    = array();
-
-		foreach ( $blocks as $block ) {
+	public static function get_lockouts() {
+		$out = array();
+		foreach ( wfBlock::lockouts( true ) as $block ) {
 			$ip = (string) $block->ip;
 			if ( '' === $ip ) {
 				continue;
 			}
 			$out[] = array(
 				'id'           => (int) $block->id,
-				'type'         => (int) $block->type,
 				'ip'           => $ip,
 				'reason'       => (string) $block->reason,
 				'blocked_time' => (int) $block->blockedTime,
@@ -163,8 +148,32 @@ class WFAM_Wordfence {
 				'expiration'   => (int) $block->expiration,
 			);
 		}
-
 		return $out;
+	}
+
+	/**
+	 * IPs that ALSO have an active firewall IP block (manual/automatic/rate
+	 * limit). This helper does not manage those; the UI just flags them so the
+	 * admin knows unlocking the login alone may not be enough.
+	 *
+	 * @return array<string, true>
+	 */
+	public static function ips_with_firewall_blocks() {
+		$ips = array();
+		foreach ( wfBlock::ipBlocks( true ) as $block ) {
+			$ips[ (string) $block->ip ] = true;
+		}
+		return $ips;
+	}
+
+	/**
+	 * Whether an IP currently has an active Wordfence login lockout.
+	 *
+	 * @param string $ip Canonical IP.
+	 * @return bool
+	 */
+	public static function has_active_lockout( $ip ) {
+		return false !== wfBlock::lockoutForIP( $ip );
 	}
 
 	/**
@@ -175,7 +184,7 @@ class WFAM_Wordfence {
 	 * same table-name and binary-IP helpers Wordfence itself uses.
 	 *
 	 * @param string[] $ips Printable IPs.
-	 * @return array<string, array> Keyed by printable IP: attempts, last, names (lowercased username => [name, user_id]) newest first.
+	 * @return array<string, array> Keyed by IP: times (int[] newest first), names (lowercased => [name, user_id]) newest first.
 	 */
 	public static function get_login_failures( array $ips ) {
 		global $wpdb;
@@ -197,14 +206,12 @@ class WFAM_Wordfence {
 				$ip = wfUtils::inet_ntop( $row['IP'] );
 				if ( ! isset( $result[ $ip ] ) ) {
 					$result[ $ip ] = array(
-						'attempts' => 0,
-						'last'     => 0,
-						'names'    => array(),
+						'times' => array(),
+						'names' => array(),
 					);
 				}
 
-				$result[ $ip ]['attempts']++;
-				$result[ $ip ]['last'] = max( $result[ $ip ]['last'], (int) floor( (float) $row['ctime'] ) );
+				$result[ $ip ]['times'][] = (int) floor( (float) $row['ctime'] );
 
 				$name = (string) $row['username'];
 				$key  = strtolower( $name );
@@ -319,32 +326,34 @@ class WFAM_Wordfence {
 	}
 
 	/**
-	 * Removes every Wordfence block/lockout row for one IP and resets its
-	 * failed-login counters. This is exactly what Wordfence's own
-	 * "Unblock" button does (wordfence::ajax_unblockIP_callback()).
+	 * Ends the failed-login lockout for one IP and resets its failure
+	 * counters: exactly what Wordfence's own unlock does
+	 * (wordfence::ajax_unlockOutIP_callback()). Only TYPE_LOCKOUT rows are
+	 * removed; any other firewall block on the IP is left alone.
 	 * Does not sync the firewall; callers run sync_firewall() once afterwards.
 	 *
-	 * @param string $ip Canonical public IP.
+	 * @param string $ip Canonical IP.
 	 * @return void
 	 */
-	public static function unblock( $ip ) {
-		wfBlock::unblockIP( $ip );
+	public static function unlock( $ip ) {
+		wfBlock::unlockOutIP( $ip );
 		wordfence::clearLockoutCounters( $ip );
 	}
 
 	/**
-	 * Pushes the current block list and allowlist into the Wordfence firewall's
+	 * Pushes the current lockouts and allowlist into the Wordfence firewall's
 	 * synced config (wflogs/config-synced.php) immediately, instead of waiting
-	 * for Wordfence to do it on the next request.
+	 * for Wordfence to do it on a later request.
 	 *
 	 *  - wfWAFIPBlocksController::synchronizeConfigSettings() is the function
-	 *    Wordfence itself runs after creating blocks; it copies blocks/lockouts.
+	 *    Wordfence itself schedules after creating blocks/lockouts; it copies
+	 *    blocks and lockouts. (Removing a lockout does not trigger it.)
 	 *  - The allowlist copy mirrors wordfence::veryFirstAction(), which writes
 	 *    `whitelistedIPs` from wfConfig on every request.
 	 *
 	 * Only data is copied; no setting is changed.
 	 *
-	 * @return bool False when the firewall could not be synced now (Wordfence will still sync on its next request).
+	 * @return bool False when the firewall could not be synced now (Wordfence will still sync on a later request).
 	 */
 	public static function sync_firewall() {
 		if ( defined( 'WFWAF_SUBDIRECTORY_INSTALL' ) && WFWAF_SUBDIRECTORY_INSTALL ) {
@@ -394,11 +403,7 @@ class WFAM_Wordfence {
 	/**
 	 * Validates input as ONE IP address (any scope) and returns Wordfence's
 	 * canonical form. Used for Unblock, where the IP must also match an
-	 * existing block row.
-	 *
-	 * Always rejects 192.0.2.0/24: Wordfence stores its country and pattern
-	 * block rows under 192.0.2.1 / 192.0.2.2, and wfBlock::unblockIP() deletes
-	 * every row for an IP, so those must never be passed to it.
+	 * existing lockout.
 	 *
 	 * @param mixed $raw Unslashed input.
 	 * @return string|WP_Error Canonical IP or error.
@@ -442,12 +447,12 @@ class WFAM_Wordfence {
 
 		$is_public = filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
 		if ( ! $is_public || wfUtils::isPrivateAddress( $ip ) ) {
-			return new WP_Error( 'wfam_ip_not_public', __( 'Private, reserved and loopback addresses cannot be used. Enter the public IP address.', 'wordfence-access-manager' ) );
+			return new WP_Error( 'wfam_ip_not_public', __( 'Private, reserved and loopback addresses cannot be allowlisted. Only a public IP address can be allowlisted.', 'wordfence-access-manager' ) );
 		}
 
 		foreach ( self::$extra_rejected_ranges as $range ) {
 			if ( wfUtils::subnetContainsIP( $range, $ip ) ) {
-				return new WP_Error( 'wfam_ip_not_public', __( 'This address is in a reserved or shared range (for example carrier-grade NAT) and cannot be used.', 'wordfence-access-manager' ) );
+				return new WP_Error( 'wfam_ip_not_public', __( 'This address is in a reserved or shared range (for example carrier-grade NAT) and cannot be allowlisted.', 'wordfence-access-manager' ) );
 			}
 		}
 

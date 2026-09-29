@@ -2,10 +2,13 @@
 /**
  * Admin screen (Wordfence → Access Manager) and its AJAX endpoints.
  *
+ * Scope: IPs currently locked out by Wordfence's failed-login protection
+ * (wfBlock TYPE_LOCKOUT). Other firewall blocks are not managed here.
+ *
  * Every endpoint: nonce + manage_options + Wordfence availability check,
- * strict IP validation, sanitized input. Output is returned as JSON data and
- * rendered with textContent in admin.js (attempted usernames are attacker-
- * controlled, so they are never inserted as HTML).
+ * strict IP validation, sanitized input. Output is JSON rendered with
+ * textContent in admin.js (attempted usernames are attacker-controlled, so
+ * they are never inserted as HTML).
  *
  * @package Wordfence_Access_Manager
  */
@@ -46,7 +49,6 @@ class WFAM_Admin {
 			'registry'          => 'ajax_registry',
 			'unblock'           => 'ajax_unblock',
 			'unblock_allowlist' => 'ajax_unblock_allowlist',
-			'add_allowlist'     => 'ajax_add_allowlist',
 			'remove_allowlist'  => 'ajax_remove_allowlist',
 		);
 		foreach ( $actions as $action => $method ) {
@@ -95,34 +97,39 @@ class WFAM_Admin {
 			'wordfence-access-manager',
 			'wfamHelper',
 			array(
-				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
-				'nonce'   => wp_create_nonce( self::NONCE ),
-				'i18n'    => array(
-					'loading'          => __( 'Loading…', 'wordfence-access-manager' ),
-					'none'             => __( 'No blocked IPs match these filters.', 'wordfence-access-manager' ),
-					'noHelperEntries'  => __( 'No IPs have been added through this helper.', 'wordfence-access-manager' ),
+				'ajaxUrl'    => admin_url( 'admin-ajax.php' ),
+				'nonce'      => wp_create_nonce( self::NONCE ),
+				'maxSeconds' => WFAM_Store::max_seconds(),
+				'minSeconds' => WFAM_Store::MIN_SECONDS,
+				'i18n'       => array(
+					'none'             => __( 'No IPs are currently locked out by Wordfence for failed logins.', 'wordfence-access-manager' ),
+					'noneFiltered'     => __( 'No locked-out IPs match these filters.', 'wordfence-access-manager' ),
+					'noHelperEntries'  => __( 'No temporary allowlist entries are active.', 'wordfence-access-manager' ),
 					'noAudit'          => __( 'No activity recorded yet.', 'wordfence-access-manager' ),
 					'noMatch'          => __( 'No matching account', 'wordfence-access-manager' ),
 					'unblock'          => __( 'Unblock', 'wordfence-access-manager' ),
-					'unblockAllowlist' => __( 'Unblock + Allowlist', 'wordfence-access-manager' ),
-					'remove'           => __( 'Remove', 'wordfence-access-manager' ),
-					'yes'              => __( 'Yes', 'wordfence-access-manager' ),
-					'no'               => __( 'No', 'wordfence-access-manager' ),
-					'helperAdded'      => __( 'added by helper', 'wordfence-access-manager' ),
+					'unblockAllowlist' => __( 'Unblock + Temporary Allowlist', 'wordfence-access-manager' ),
+					'remove'           => __( 'Remove now', 'wordfence-access-manager' ),
+					'notAllowlisted'   => __( 'Not allowlisted', 'wordfence-access-manager' ),
+					'helperUntil'      => __( 'Temporary, expires %s', 'wordfence-access-manager' ),
+					'wordfenceEntry'   => __( 'Allowlisted in Wordfence settings', 'wordfence-access-manager' ),
+					'firewallBlock'    => __( 'Also has a firewall IP block (manage in Wordfence → Firewall → Blocking).', 'wordfence-access-manager' ),
 					'others'           => __( '+%d other usernames', 'wordfence-access-manager' ),
-					'blockedHits'      => __( '%d blocked requests', 'wordfence-access-manager' ),
-					'pageOf'           => __( 'Page %1$d of %2$d · %3$d IPs', 'wordfence-access-manager' ),
+					'attemptsTotal'    => __( '%d total in Wordfence log', 'wordfence-access-manager' ),
+					'pageOf'           => __( 'Page %1$d of %2$d · %3$d locked-out IPs', 'wordfence-access-manager' ),
+					'expired'          => __( 'Expired', 'wordfence-access-manager' ),
+					'noExpiry'         => __( 'No expiry', 'wordfence-access-manager' ),
+					'left'             => __( '%s left', 'wordfence-access-manager' ),
 					'requestFailed'    => __( 'The request failed. Check your connection and try again.', 'wordfence-access-manager' ),
+					'customInvalid'    => __( 'Choose a custom expiry date and time.', 'wordfence-access-manager' ),
 					'confirmUnblockT'  => __( 'Unblock this IP?', 'wordfence-access-manager' ),
-					'confirmUnblock'   => __( 'All Wordfence blocks and login lockouts for %s will be removed and its failed-login counter reset. It is NOT added to the allowlist, so it can be blocked again.', 'wordfence-access-manager' ),
-					'confirmAllowT'    => __( 'Unblock and allowlist this IP?', 'wordfence-access-manager' ),
-					'confirmAllow'     => __( '%s will be unblocked and added to the Wordfence allowlist. It will bypass Wordfence firewall rules, blocks and login lockouts until removed. A correct password is still required to log in.', 'wordfence-access-manager' ),
-					'confirmAddT'      => __( 'Add this IP to the allowlist?', 'wordfence-access-manager' ),
-					'confirmAdd'       => __( '%s will be added to the Wordfence allowlist and will bypass Wordfence firewall rules, blocks and login lockouts until removed.', 'wordfence-access-manager' ),
-					'confirmRemoveT'   => __( 'Remove from allowlist?', 'wordfence-access-manager' ),
-					'confirmRemove'    => __( '%s will be removed from the Wordfence allowlist. Wordfence will count and block it like any other IP again.', 'wordfence-access-manager' ),
-					'manyWarning'      => __( 'Warning: this IP tried %d different usernames. It may be shared by many people (office network, proxy) or be a bot. Only allowlist it if you are sure it is a trusted, fixed address.', 'wordfence-access-manager' ),
-					'dynamicWarning'   => __( 'Only allowlist fixed addresses (office, VPN exit). Home and mobile IPs change; if this one is reassigned, a stranger inherits the bypass. For those, use Unblock only.', 'wordfence-access-manager' ),
+					'confirmUnblock'   => __( 'The Wordfence login lockout for %s will be removed and its failed-login counter reset. The IP is NOT allowlisted: if more logins fail, Wordfence will lock it out again under its normal settings.', 'wordfence-access-manager' ),
+					'confirmAllowT'    => __( 'Unblock and temporarily allowlist this IP?', 'wordfence-access-manager' ),
+					'confirmAllow'     => __( 'The lockout for %s will be removed and the IP added to the Wordfence allowlist until the time you choose. Until then it bypasses Wordfence firewall rules and login lockouts (a correct password is still required). When it expires, the entry is removed and normal Wordfence protection applies again.', 'wordfence-access-manager' ),
+					'confirmRemoveT'   => __( 'Remove temporary allowlist now?', 'wordfence-access-manager' ),
+					'confirmRemove'    => __( '%s will be removed from the Wordfence allowlist now. Wordfence will count and lock it out like any other IP again.', 'wordfence-access-manager' ),
+					'manyWarning'      => __( 'Warning: this IP tried %d different usernames. It may be shared by many people (office network, proxy) or be a bot.', 'wordfence-access-manager' ),
+					'dynamicWarning'   => __( 'Home and mobile IPs change. If this IP is reassigned during the allowlist period, whoever gets it inherits the bypass, so keep the period short.', 'wordfence-access-manager' ),
 				),
 			)
 		);
@@ -143,11 +150,14 @@ class WFAM_Admin {
 			return; // The admin notice lists what is missing.
 		}
 
-		$type_labels   = WFAM_Wordfence::type_labels();
+		$settings      = WFAM_Wordfence::lockout_settings();
+		$cause_labels  = self::cause_labels();
 		$current_ip    = WFAM_Wordfence::current_ip();
 		$ip_is_public  = (bool) filter_var( $current_ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
-		$ip_allowed    = '' !== $current_ip && WFAM_Wordfence::is_allowlisted( $current_ip );
 		$expiry_labels = self::expiry_labels();
+		$human_minutes = static function ( $seconds ) {
+			return human_time_diff( 0, max( 60, (int) $seconds ) );
+		};
 
 		include WFAM_DIR . 'views/admin-page.php';
 	}
@@ -157,39 +167,40 @@ class WFAM_Admin {
 	 * ------------------------------------------------------------------- */
 
 	/**
-	 * Returns one filtered page of blocked IPs.
+	 * Returns one filtered page of locked-out IPs.
 	 *
-	 * POST: page, ip, user, type ('all' | wfBlock type id), allowlisted
-	 * ('all'|'yes'|'no'), member ('all'|'likely').
+	 * POST: page, ip, user, cause, allowlisted ('all'|'yes'|'no'), member ('all'|'likely').
 	 *
 	 * @return void
 	 */
 	public static function ajax_list() {
 		self::guard();
 
-		// Opportunistic expiry so a delayed WP-Cron never leaves an expired entry active while admins are looking.
+		// Expire anything due first, so the allowlist column is never stale.
 		WFAM_Plugin::purge_expired();
 
-		$labels  = WFAM_Wordfence::type_labels();
 		$filters = array(
 			'ip'          => strtolower( self::post_string( 'ip', 64 ) ),
 			'user'        => strtolower( self::post_string( 'user', 100 ) ),
-			'type'        => self::post_string( 'type', 10 ),
+			'cause'       => self::post_string( 'cause', 20 ),
 			'allowlisted' => self::post_string( 'allowlisted', 10 ),
 			'member'      => self::post_string( 'member', 10 ),
 		);
-		$type_id = ctype_digit( $filters['type'] ) && isset( $labels[ (int) $filters['type'] ] ) ? (int) $filters['type'] : null;
+		if ( ! isset( self::cause_labels()[ $filters['cause'] ] ) ) {
+			$filters['cause'] = 'all';
+		}
 
+		$all  = self::dataset();
 		$rows = array_filter(
-			self::dataset(),
-			static function ( $row ) use ( $filters, $type_id ) {
+			$all,
+			static function ( $row ) use ( $filters ) {
 				if ( '' !== $filters['ip'] && false === strpos( strtolower( $row['ip'] ), $filters['ip'] ) ) {
 					return false;
 				}
 				if ( '' !== $filters['user'] && false === strpos( $row['search_names'], $filters['user'] ) ) {
 					return false;
 				}
-				if ( null !== $type_id && ! in_array( $type_id, $row['type_ids'], true ) ) {
+				if ( 'all' !== $filters['cause'] && $row['cause'] !== $filters['cause'] ) {
 					return false;
 				}
 				if ( 'yes' === $filters['allowlisted'] && ! $row['allowlisted'] ) {
@@ -208,7 +219,7 @@ class WFAM_Admin {
 		usort(
 			$rows,
 			static function ( $a, $b ) {
-				return $b['last_attempt'] - $a['last_attempt'];
+				return $b['blocked_time'] - $a['blocked_time'];
 			}
 		);
 
@@ -216,26 +227,64 @@ class WFAM_Admin {
 		$pages = max( 1, (int) ceil( $total / self::PER_PAGE ) );
 		$page  = min( $pages, max( 1, absint( isset( $_POST['page'] ) ? wp_unslash( $_POST['page'] ) : 1 ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verified in guard().
 
-		$slice = array_slice( $rows, ( $page - 1 ) * self::PER_PAGE, self::PER_PAGE );
-
 		wp_send_json_success(
 			array(
-				'rows'  => array_map( array( __CLASS__, 'format_row' ), $slice ),
-				'total' => $total,
-				'page'  => $page,
-				'pages' => $pages,
+				'rows'       => array_map( array( __CLASS__, 'format_row' ), array_slice( $rows, ( $page - 1 ) * self::PER_PAGE, self::PER_PAGE ) ),
+				'total'      => $total,
+				'totalAll'   => count( $all ),
+				'page'       => $page,
+				'pages'      => $pages,
+				'serverTime' => time(),
 			)
 		);
 	}
 
 	/**
-	 * Returns the helper-added allowlist and recent audit entries.
+	 * Returns active temporary allowlist entries and recent audit entries.
 	 *
 	 * @return void
 	 */
 	public static function ajax_registry() {
 		self::guard();
-		self::send_registry();
+		WFAM_Plugin::purge_expired();
+
+		$entries = array();
+		foreach ( WFAM_Store::registry() as $entry ) {
+			$entries[] = array(
+				'ip'        => $entry['ip'],
+				'note'      => $entry['note'],
+				'addedBy'   => '' !== $entry['added_by_name'] ? $entry['added_by_name'] : '#' . (int) $entry['added_by'],
+				'added'     => self::format_time( $entry['added_at'] ),
+				'addedAt'   => (int) $entry['added_at'],
+				'expiresAt' => (int) $entry['expires_at'],
+				'expires'   => $entry['expires_at'] ? self::format_date( $entry['expires_at'] ) : __( 'No expiry', 'wordfence-access-manager' ),
+			);
+		}
+		usort(
+			$entries,
+			static function ( $a, $b ) {
+				return $a['expiresAt'] - $b['expiresAt'];
+			}
+		);
+
+		$audit = array();
+		foreach ( WFAM_Store::recent_audit( 20 ) as $item ) {
+			$audit[] = array(
+				'time'    => self::format_time( $item['time'] ),
+				'user'    => $item['user_login'],
+				'action'  => self::action_label( $item['action'] ),
+				'ip'      => $item['ip'],
+				'details' => $item['details'],
+			);
+		}
+
+		wp_send_json_success(
+			array(
+				'entries'    => $entries,
+				'audit'      => $audit,
+				'serverTime' => time(),
+			)
+		);
 	}
 
 	/* ---------------------------------------------------------------------
@@ -243,7 +292,7 @@ class WFAM_Admin {
 	 * ------------------------------------------------------------------- */
 
 	/**
-	 * Unblock only. The IP must currently have an active single-IP block.
+	 * Unblock only. The IP must currently be locked out.
 	 *
 	 * @return void
 	 */
@@ -252,39 +301,47 @@ class WFAM_Admin {
 
 		$ip = WFAM_Wordfence::normalize_ip( self::post_raw( 'ip' ) );
 		self::fail_on_error( $ip );
-
-		if ( ! self::has_active_block( $ip ) ) {
-			wp_send_json_error( array( 'message' => __( 'No active Wordfence block was found for this IP. It may already have expired or been removed.', 'wordfence-access-manager' ) ), 404 );
-		}
+		self::require_active_lockout( $ip );
 
 		$result = WFAM_Plugin::unblock_ip( $ip );
 
 		/* translators: %s: IP address. */
-		self::send_done( sprintf( __( '%s was unblocked.', 'wordfence-access-manager' ), $ip ), $result['synced'] );
+		self::send_done( sprintf( __( 'The Wordfence login lockout for %s was removed.', 'wordfence-access-manager' ), $ip ), $result['synced'] );
 	}
 
 	/**
-	 * Unblock + add to the Wordfence allowlist (public IPs only).
+	 * Unblock + temporary allowlist (public IPs only, IP must be locked out).
+	 *
+	 * POST: ip, note, expiry ('1h'|'4h'|'24h'|'7d'|'custom'), custom_ts (unix, for custom).
 	 *
 	 * @return void
 	 */
 	public static function ajax_unblock_allowlist() {
 		self::guard();
-		self::allowlist_from_request( true );
+
+		$ip = WFAM_Wordfence::normalize_public_ip( self::post_raw( 'ip' ) );
+		self::fail_on_error( $ip );
+		self::require_active_lockout( $ip );
+
+		$expires_at = WFAM_Store::resolve_expiry( self::post_string( 'expiry', 10 ), absint( self::post_string( 'custom_ts', 12 ) ) );
+		self::fail_on_error( $expires_at );
+
+		$result = WFAM_Plugin::unblock_and_allowlist( $ip, self::post_string( 'note', 200 ), $expires_at );
+		self::fail_on_error( $result );
+
+		if ( 'exists' === $result['status'] ) {
+			/* translators: %s: IP address. */
+			$message = sprintf( __( 'The lockout for %s was removed. The IP is already covered by an allowlist entry in the Wordfence settings, so no temporary entry was added.', 'wordfence-access-manager' ), $ip );
+		} else {
+			/* translators: 1: IP address, 2: date/time. */
+			$message = sprintf( __( 'The lockout for %1$s was removed and the IP is allowlisted until %2$s.', 'wordfence-access-manager' ), $ip, self::format_date( $expires_at ) );
+		}
+
+		self::send_done( $message, $result['synced'] );
 	}
 
 	/**
-	 * Manual "Add IP to Allowlist" form (public IPs only). Optional unblock.
-	 *
-	 * @return void
-	 */
-	public static function ajax_add_allowlist() {
-		self::guard();
-		self::allowlist_from_request( '1' === self::post_string( 'unblock', 1 ) );
-	}
-
-	/**
-	 * Removes a helper-added IP from the Wordfence allowlist.
+	 * Removes a helper-added temporary allowlist entry early.
 	 *
 	 * @return void
 	 */
@@ -306,89 +363,41 @@ class WFAM_Admin {
 	 * ------------------------------------------------------------------- */
 
 	/**
-	 * Shared handler for both allowlist actions.
-	 *
-	 * @param bool $unblock Also unblock the IP.
-	 * @return void Sends JSON.
-	 */
-	private static function allowlist_from_request( $unblock ) {
-		$ip = WFAM_Wordfence::normalize_public_ip( self::post_raw( 'ip' ) );
-		self::fail_on_error( $ip );
-
-		$result = WFAM_Plugin::allowlist_ip( $ip, self::post_string( 'note', 200 ), self::post_string( 'expiry', 10 ), $unblock );
-		self::fail_on_error( $result );
-
-		if ( 'added' === $result['status'] ) {
-			$message = $unblock
-				/* translators: %s: IP address. */
-				? sprintf( __( '%s was unblocked and added to the Wordfence allowlist.', 'wordfence-access-manager' ), $ip )
-				/* translators: %s: IP address. */
-				: sprintf( __( '%s was added to the Wordfence allowlist.', 'wordfence-access-manager' ), $ip );
-		} else {
-			$message = $unblock
-				/* translators: %s: IP address. */
-				? sprintf( __( '%s was unblocked. It is already covered by an existing Wordfence allowlist entry, so nothing new was added.', 'wordfence-access-manager' ), $ip )
-				/* translators: %s: IP address. */
-				: sprintf( __( '%s is already covered by an existing Wordfence allowlist entry. Nothing was added.', 'wordfence-access-manager' ), $ip );
-		}
-
-		self::send_done( $message, $result['synced'] );
-	}
-
-	/**
-	 * Builds one row per blocked IP from Wordfence's blocks + login log.
+	 * Builds one row per locked-out IP from Wordfence's lockouts + login log.
 	 *
 	 * @return array[]
 	 */
 	private static function dataset() {
-		$by_ip = array();
+		$settings = WFAM_Wordfence::lockout_settings();
+		$by_ip    = array();
 
-		foreach ( WFAM_Wordfence::get_ip_blocks() as $block ) {
-			$ip = $block['ip'];
-			if ( ! isset( $by_ip[ $ip ] ) ) {
-				$by_ip[ $ip ] = array(
-					'type_ids'     => array(),
-					'reason'       => '',
-					'reason_time'  => -1,
-					'expiration'   => null,
-					'hits'         => 0,
-					'last_block'   => 0,
-					'reason_names' => array(),
-				);
+		// Wordfence keeps one active lockout per IP (createLockout() updates it); keep the newest just in case.
+		foreach ( WFAM_Wordfence::get_lockouts() as $lockout ) {
+			if ( ! isset( $by_ip[ $lockout['ip'] ] ) || $lockout['blocked_time'] > $by_ip[ $lockout['ip'] ]['blocked_time'] ) {
+				$by_ip[ $lockout['ip'] ] = $lockout;
 			}
-			$row = &$by_ip[ $ip ];
+		}
+		if ( ! $by_ip ) {
+			return array();
+		}
 
-			$row['type_ids'][ $block['type'] ] = $block['type'];
-			$row['hits']                     += $block['hits'];
-			$row['last_block']                = max( $row['last_block'], $block['blocked_time'], $block['last_attempt'] );
+		$logins   = WFAM_Wordfence::get_login_failures( array_keys( $by_ip ) );
+		$firewall = WFAM_Wordfence::ips_with_firewall_blocks();
+		$ids      = array();
+		$names    = array();
+		$per_ip   = array();
 
-			if ( $block['blocked_time'] > $row['reason_time'] ) {
-				$row['reason']      = $block['reason'];
-				$row['reason_time'] = $block['blocked_time'];
-			}
-
-			// 0 = permanent and always wins; otherwise keep the latest expiry.
-			if ( null === $row['expiration'] || ( 0 !== $row['expiration'] && ( 0 === $block['expiration'] || $block['expiration'] > $row['expiration'] ) ) ) {
-				$row['expiration'] = $block['expiration'];
-			}
+		foreach ( $by_ip as $ip => $lockout ) {
+			$list = ! empty( $logins[ $ip ]['names'] ) ? $logins[ $ip ]['names'] : array();
 
 			// Lockout reasons quote the username tried; used if the login log was pruned.
-			if ( wfBlock::TYPE_LOCKOUT === $block['type'] && preg_match( "/'([^']+)'/", $block['reason'], $m ) ) {
-				$row['reason_names'][ strtolower( $m[1] ) ] = array(
+			if ( ! $list && preg_match( "/'([^']+)'/", $lockout['reason'], $m ) ) {
+				$list[ strtolower( $m[1] ) ] = array(
 					'name'    => $m[1],
 					'user_id' => 0,
 				);
 			}
-		}
-		unset( $row );
 
-		$logins  = WFAM_Wordfence::get_login_failures( array_keys( $by_ip ) );
-		$ids     = array();
-		$names   = array();
-		$per_ip  = array();
-
-		foreach ( $by_ip as $ip => $row ) {
-			$list          = ! empty( $logins[ $ip ]['names'] ) ? $logins[ $ip ]['names'] : $row['reason_names'];
 			$per_ip[ $ip ] = $list;
 			foreach ( $list as $key => $item ) {
 				$names[ $key ] = $item['name'];
@@ -403,7 +412,7 @@ class WFAM_Admin {
 		$registry = WFAM_Store::registry();
 		$rows     = array();
 
-		foreach ( $by_ip as $ip => $row ) {
+		foreach ( $by_ip as $ip => $lockout ) {
 			$member    = null;
 			$usernames = array();
 			$search    = array();
@@ -424,19 +433,34 @@ class WFAM_Admin {
 				$search[] = strtolower( $member->display_name . ' ' . $member->user_login . ' ' . $member->user_email );
 			}
 
-			$rows[] = array(
-				'ip'           => $ip,
-				'type_ids'     => array_values( $row['type_ids'] ),
-				'reason'       => $row['reason'],
-				'expiration'   => (int) $row['expiration'],
-				'hits'         => $row['hits'],
-				'attempts'     => isset( $logins[ $ip ] ) ? $logins[ $ip ]['attempts'] : 0,
-				'last_attempt' => max( $row['last_block'], isset( $logins[ $ip ] ) ? $logins[ $ip ]['last'] : 0 ),
-				'usernames'    => $usernames,
-				'search_names' => implode( ' ', $search ),
-				'member'       => $member,
-				'allowlisted'  => $matcher( $ip ),
-				'helper_owned' => isset( $registry[ $ip ] ),
+			// Failures inside Wordfence's counting window that led to this lockout.
+			$times     = isset( $logins[ $ip ] ) ? $logins[ $ip ]['times'] : array();
+			$from      = $lockout['blocked_time'] - $settings['count_window'];
+			$to        = $lockout['blocked_time'] + MINUTE_IN_SECONDS;
+			$in_window = count(
+				array_filter(
+					$times,
+					static function ( $t ) use ( $from, $to ) {
+						return $t >= $from && $t <= $to;
+					}
+				)
+			);
+
+			$allowlisted = $matcher( $ip );
+			$rows[]      = array(
+				'ip'             => $ip,
+				'reason'         => $lockout['reason'],
+				'cause'          => self::cause_from_reason( $lockout['reason'] ),
+				'blocked_time'   => $lockout['blocked_time'],
+				'expiration'     => $lockout['expiration'],
+				'attempts'       => $in_window,
+				'attempts_total' => count( $times ),
+				'usernames'      => $usernames,
+				'search_names'   => implode( ' ', $search ),
+				'member'         => $member,
+				'allowlisted'    => $allowlisted,
+				'helper_expires' => ( $allowlisted && isset( $registry[ $ip ] ) ) ? (int) $registry[ $ip ]['expires_at'] : null,
+				'firewall_block' => isset( $firewall[ $ip ] ),
 			);
 		}
 
@@ -455,12 +479,12 @@ class WFAM_Admin {
 
 		$found = array();
 		foreach ( array_chunk( $ids, 200 ) as $chunk ) {
-			$in    = implode( ',', array_fill( 0, count( $chunk ), '%d' ) );
+			$in = implode( ',', array_fill( 0, count( $chunk ), '%d' ) );
 			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- placeholders built above.
 			$found = array_merge( $found, (array) $wpdb->get_results( $wpdb->prepare( "SELECT ID, user_login, user_email, display_name FROM {$wpdb->users} WHERE ID IN ($in)", $chunk ) ) );
 		}
 		foreach ( array_chunk( $names, 100 ) as $chunk ) {
-			$in    = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
+			$in = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
 			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- placeholders built above.
 			$found = array_merge( $found, (array) $wpdb->get_results( $wpdb->prepare( "SELECT ID, user_login, user_email, display_name FROM {$wpdb->users} WHERE user_login IN ($in) OR user_email IN ($in)", array_merge( $chunk, $chunk ) ) ) );
 		}
@@ -486,12 +510,6 @@ class WFAM_Admin {
 	 * @return array
 	 */
 	private static function format_row( array $row ) {
-		$labels = WFAM_Wordfence::type_labels();
-		$types  = array();
-		foreach ( $row['type_ids'] as $id ) {
-			$types[] = isset( $labels[ $id ] ) ? $labels[ $id ] : (string) $id;
-		}
-
 		$member = null;
 		if ( $row['member'] ) {
 			$member = array(
@@ -500,87 +518,74 @@ class WFAM_Admin {
 			);
 		}
 
+		$causes = self::cause_labels();
+
 		return array(
-			'ip'             => $row['ip'],
-			'member'         => $member,
-			'username'       => isset( $row['usernames'][0] ) ? $row['usernames'][0] : '',
-			'otherUsernames' => max( 0, count( $row['usernames'] ) - 1 ),
-			'manyUsernames'  => count( $row['usernames'] ) >= self::MANY_USERNAMES ? count( $row['usernames'] ) : 0,
-			'attempts'       => $row['attempts'],
-			'blockedHits'    => $row['hits'],
-			'lastAttempt'    => self::format_time( $row['last_attempt'] ),
-			'types'          => $types,
-			'reason'         => $row['reason'],
-			'expiration'     => 0 === $row['expiration'] ? __( 'Never (permanent)', 'wordfence-access-manager' ) : self::format_time( $row['expiration'] ),
-			'allowlisted'    => $row['allowlisted'],
-			'helperOwned'    => $row['helper_owned'],
+			'ip'                 => $row['ip'],
+			'member'             => $member,
+			'username'           => isset( $row['usernames'][0] ) ? $row['usernames'][0] : '',
+			'otherUsernames'     => max( 0, count( $row['usernames'] ) - 1 ),
+			'manyUsernames'      => count( $row['usernames'] ) >= self::MANY_USERNAMES ? count( $row['usernames'] ) : 0,
+			'attempts'           => $row['attempts'],
+			'attemptsTotal'      => $row['attempts_total'],
+			'cause'              => $causes[ $row['cause'] ],
+			'reason'             => $row['reason'],
+			'blockedAt'          => self::format_time( $row['blocked_time'] ),
+			'expiresAt'          => $row['expiration'],
+			'expires'            => $row['expiration'] ? self::format_date( $row['expiration'] ) : '',
+			'allowlisted'        => $row['allowlisted'],
+			'helperExpiresAt'    => $row['helper_expires'],
+			'helperExpires'      => $row['helper_expires'] ? self::format_date( $row['helper_expires'] ) : '',
+			'firewallBlock'      => $row['firewall_block'],
+			'canAllowlist'       => ! is_wp_error( WFAM_Wordfence::normalize_public_ip( $row['ip'] ) ),
 		);
 	}
 
 	/**
-	 * Sends the helper registry + recent audit log.
+	 * Lockout cause from Wordfence's (English) reason templates in
+	 * wfWAFBlockI18n. Anything else, including translated text, is "other".
 	 *
-	 * @return void
+	 * @param string $reason Stored reason.
+	 * @return string Key of cause_labels().
 	 */
-	private static function send_registry() {
-		$entries = array();
-		foreach ( WFAM_Store::registry() as $entry ) {
-			if ( empty( $entry['expires_at'] ) ) {
-				$expiry = __( 'Never', 'wordfence-access-manager' );
-			} elseif ( $entry['expires_at'] <= time() ) {
-				$expiry = __( 'Expired – removal pending', 'wordfence-access-manager' );
-			} else {
-				$expiry = self::format_time( $entry['expires_at'] );
-			}
-
-			$entries[] = array(
-				'ip'      => $entry['ip'],
-				'note'    => $entry['note'],
-				'addedBy' => '' !== $entry['added_by_name'] ? $entry['added_by_name'] : '#' . (int) $entry['added_by'],
-				'added'   => self::format_time( $entry['added_at'] ),
-				'addedAt' => (int) $entry['added_at'],
-				'expiry'  => $expiry,
-			);
+	private static function cause_from_reason( $reason ) {
+		if ( 0 === strpos( $reason, 'Exceeded the maximum number of login failures' ) ) {
+			return 'failures';
 		}
-		usort(
-			$entries,
-			static function ( $a, $b ) {
-				return $b['addedAt'] - $a['addedAt'];
-			}
-		);
-
-		$audit = array();
-		foreach ( WFAM_Store::recent_audit( 20 ) as $item ) {
-			$audit[] = array(
-				'time'    => self::format_time( $item['time'] ),
-				'user'    => $item['user_login'],
-				'action'  => self::action_label( $item['action'] ),
-				'ip'      => $item['ip'],
-				'details' => $item['details'],
-			);
+		if ( 0 === strpos( $reason, 'Used an invalid username' ) ) {
+			return 'invalid_username';
 		}
+		if ( 0 === strpos( $reason, 'Exceeded the maximum number of tries to recover their password' ) ) {
+			return 'forgot_password';
+		}
+		return 'other';
+	}
 
-		wp_send_json_success(
-			array(
-				'entries' => $entries,
-				'audit'   => $audit,
-			)
+	/**
+	 * Lockout cause labels (also the filter options).
+	 *
+	 * @return array<string, string>
+	 */
+	private static function cause_labels() {
+		return array(
+			'all'              => __( 'All causes', 'wordfence-access-manager' ),
+			'failures'         => __( 'Too many failed logins', 'wordfence-access-manager' ),
+			'invalid_username' => __( 'Unknown username/email', 'wordfence-access-manager' ),
+			'forgot_password'  => __( 'Too many password resets', 'wordfence-access-manager' ),
+			'other'            => __( 'Other', 'wordfence-access-manager' ),
 		);
 	}
 
 	/**
-	 * Whether the IP currently has an active single-IP block or lockout.
+	 * The IP must have an active Wordfence login lockout; exits otherwise.
 	 *
 	 * @param string $ip Canonical IP.
-	 * @return bool
+	 * @return void
 	 */
-	private static function has_active_block( $ip ) {
-		foreach ( WFAM_Wordfence::get_ip_blocks() as $block ) {
-			if ( $block['ip'] === $ip ) {
-				return true;
-			}
+	private static function require_active_lockout( $ip ) {
+		if ( ! WFAM_Wordfence::has_active_lockout( $ip ) ) {
+			wp_send_json_error( array( 'message' => __( 'This IP is no longer locked out: the Wordfence lockout has expired or was already removed. No action was taken.', 'wordfence-access-manager' ) ), 409 );
 		}
-		return false;
 	}
 
 	/**
@@ -656,7 +661,17 @@ class WFAM_Admin {
 	}
 
 	/**
-	 * "Y-m-d H:i (3 hours ago / in 2 days)" in the site's formats/timezone.
+	 * Date/time in the site's format and timezone.
+	 *
+	 * @param int $ts Unix timestamp.
+	 * @return string
+	 */
+	private static function format_date( $ts ) {
+		return wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $ts );
+	}
+
+	/**
+	 * "date time (3 hours ago)" for past events.
 	 *
 	 * @param int $ts Unix timestamp.
 	 * @return string
@@ -666,27 +681,22 @@ class WFAM_Admin {
 		if ( $ts <= 0 ) {
 			return '—';
 		}
-
-		$date     = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $ts );
-		$relative = $ts > time()
-			/* translators: %s: human time difference. */
-			? sprintf( __( 'in %s', 'wordfence-access-manager' ), human_time_diff( time(), $ts ) )
-			/* translators: %s: human time difference. */
-			: sprintf( __( '%s ago', 'wordfence-access-manager' ), human_time_diff( $ts, time() ) );
-
-		return $date . ' (' . $relative . ')';
+		/* translators: %s: human time difference. */
+		return self::format_date( $ts ) . ' (' . sprintf( __( '%s ago', 'wordfence-access-manager' ), human_time_diff( $ts, time() ) ) . ')';
 	}
 
 	/**
-	 * Expiry dropdown labels (keys match WFAM_Store::expiry_choices()).
+	 * Expiry choice labels (keys match WFAM_Store::expiry_presets() + 'custom').
 	 *
 	 * @return array<string, string>
 	 */
 	private static function expiry_labels() {
 		return array(
-			'7'     => __( '7 days', 'wordfence-access-manager' ),
-			'30'    => __( '30 days', 'wordfence-access-manager' ),
-			'never' => __( 'Never', 'wordfence-access-manager' ),
+			'1h'     => __( '1 hour', 'wordfence-access-manager' ),
+			'4h'     => __( '4 hours', 'wordfence-access-manager' ),
+			'24h'    => __( '24 hours', 'wordfence-access-manager' ),
+			'7d'     => __( '7 days', 'wordfence-access-manager' ),
+			'custom' => __( 'Custom…', 'wordfence-access-manager' ),
 		);
 	}
 
@@ -698,11 +708,13 @@ class WFAM_Admin {
 	 */
 	private static function action_label( $action ) {
 		$labels = array(
-			'unblock'           => __( 'Unblocked', 'wordfence-access-manager' ),
-			'unblock_allowlist' => __( 'Unblocked + allowlisted', 'wordfence-access-manager' ),
-			'allowlist_add'     => __( 'Allowlisted', 'wordfence-access-manager' ),
-			'allowlist_remove'  => __( 'Removed from allowlist', 'wordfence-access-manager' ),
-			'allowlist_expired' => __( 'Allowlist expired (auto-removed)', 'wordfence-access-manager' ),
+			'unblock'               => __( 'Unblocked', 'wordfence-access-manager' ),
+			'unblock_allowlist'     => __( 'Unblocked + temporary allowlist', 'wordfence-access-manager' ),
+			'allowlist_extended'    => __( 'Unblocked + allowlist period replaced', 'wordfence-access-manager' ),
+			'allowlist_remove'      => __( 'Allowlist removed early', 'wordfence-access-manager' ),
+			'allowlist_expired'     => __( 'Allowlist expired (auto-removed)', 'wordfence-access-manager' ),
+			'allowlist_deactivated' => __( 'Allowlist removed (plugin deactivated)', 'wordfence-access-manager' ),
+			'allowlist_add'         => __( 'Allowlisted', 'wordfence-access-manager' ),
 		);
 		return isset( $labels[ $action ] ) ? $labels[ $action ] : $action;
 	}

@@ -5,62 +5,87 @@
  *
  * Variables from WFAM_Admin::render_page():
  *
- * @var array<int, string>    $type_labels
+ * @var array                 $settings      WFAM_Wordfence::lockout_settings().
+ * @var array<string, string> $cause_labels
  * @var string                $current_ip
  * @var bool                  $ip_is_public
- * @var bool                  $ip_allowed
  * @var array<string, string> $expiry_labels
+ * @var callable              $human_minutes
  *
  * @package Wordfence_Access_Manager
  */
 
 defined( 'ABSPATH' ) || exit;
 
-$wfam_expiry_options = static function () use ( $expiry_labels ) {
-	foreach ( $expiry_labels as $value => $label ) {
-		printf( '<option value="%1$s"%3$s>%2$s</option>', esc_attr( $value ), esc_html( $label ), selected( $value, '7', false ) );
-	}
-};
+$wfam_settings_url = admin_url( 'admin.php?page=WordfenceWAF&subpage=waf_options#waf-options-bruteforce' );
 ?>
 <div class="wrap wfam">
 	<h1><?php esc_html_e( 'Access Manager', 'wordfence-access-manager' ); ?></h1>
 	<p class="wfam-intro">
-		<?php esc_html_e( 'IPs Wordfence is currently blocking or locking out. Unblock a trusted user, or unblock and allowlist a trusted fixed IP. All actions use Wordfence\'s own functions; Wordfence settings and login protection for everyone else are not changed.', 'wordfence-access-manager' ); ?>
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=WordfenceWAF#top#blocking' ) ); ?>"><?php esc_html_e( 'Wordfence Blocking', 'wordfence-access-manager' ); ?></a> ·
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=WordfenceWAF&subpage=waf_options' ) ); ?>"><?php esc_html_e( 'Firewall Options (full allowlist)', 'wordfence-access-manager' ); ?></a>
+		<?php esc_html_e( 'People currently locked out by Wordfence because of failed login attempts. Lockout times come from Wordfence and are not changed here. Unblock a legitimate user, or unblock them and allowlist their IP for a limited time.', 'wordfence-access-manager' ); ?>
 	</p>
 
-	<div class="notice inline <?php echo $ip_is_public ? 'notice-info' : 'notice-warning'; ?> wfam-ipinfo">
-		<p>
+	<section class="wfam-card wfam-settings" aria-label="<?php esc_attr_e( 'Wordfence login lockout settings', 'wordfence-access-manager' ); ?>">
+		<h2><?php esc_html_e( 'Wordfence lockout rules in effect', 'wordfence-access-manager' ); ?></h2>
+		<?php if ( ! $settings['enabled'] ) : ?>
+			<p class="notice notice-warning inline"><?php esc_html_e( 'Wordfence brute force protection is turned off, so Wordfence is not creating new login lockouts.', 'wordfence-access-manager' ); ?></p>
+		<?php endif; ?>
+		<ul class="wfam-settings-list">
+			<li>
+				<span><?php esc_html_e( 'Lock out after', 'wordfence-access-manager' ); ?></span>
+				<strong>
+					<?php
+					/* translators: 1: number of failures, 2: time period. */
+					echo esc_html( sprintf( __( '%1$d failed logins within %2$s', 'wordfence-access-manager' ), $settings['max_failures'], $human_minutes( $settings['count_window'] ) ) );
+					?>
+				</strong>
+			</li>
+			<li>
+				<span><?php esc_html_e( 'Password reset attempts', 'wordfence-access-manager' ); ?></span>
+				<strong><?php echo esc_html( (string) $settings['max_forgot'] ); ?></strong>
+			</li>
+			<li>
+				<span><?php esc_html_e( 'Lockout lasts', 'wordfence-access-manager' ); ?></span>
+				<strong><?php echo esc_html( $settings['lockout_seconds'] > 0 ? $human_minutes( $settings['lockout_seconds'] ) : __( 'No expiry', 'wordfence-access-manager' ) ); ?></strong>
+			</li>
+			<li>
+				<span><?php esc_html_e( 'Unknown username/email', 'wordfence-access-manager' ); ?></span>
+				<strong><?php echo $settings['lock_invalid'] ? esc_html__( 'Locked out immediately', 'wordfence-access-manager' ) : esc_html__( 'Counted as a failure', 'wordfence-access-manager' ); ?></strong>
+			</li>
+		</ul>
+		<p class="description">
+			<?php esc_html_e( 'These are read from Wordfence and only shown for reference. Change them in Wordfence:', 'wordfence-access-manager' ); ?>
+			<a href="<?php echo esc_url( $wfam_settings_url ); ?>"><?php esc_html_e( 'Firewall Options → Brute Force Protection', 'wordfence-access-manager' ); ?></a>.
+			<?php esc_html_e( 'A lockout keeps the end time it was given when it started, even if the setting changes later.', 'wordfence-access-manager' ); ?>
+		</p>
+		<p class="description">
 			<?php esc_html_e( 'Your IP as Wordfence sees it:', 'wordfence-access-manager' ); ?>
 			<code><?php echo esc_html( '' !== $current_ip ? $current_ip : '—' ); ?></code>
-			<?php echo $ip_allowed ? esc_html__( '(allowlisted)', 'wordfence-access-manager' ) : esc_html__( '(not allowlisted)', 'wordfence-access-manager' ); ?>
+			<?php if ( ! $ip_is_public ) : ?>
+				<strong class="wfam-warn"><?php esc_html_e( 'This is a private or reserved address: the site is probably behind a proxy or CDN and Wordfence may be seeing the proxy instead of visitors. Check "How does Wordfence get IPs" before allowlisting anything.', 'wordfence-access-manager' ); ?></strong>
+			<?php endif; ?>
 		</p>
-		<?php if ( ! $ip_is_public ) : ?>
-			<p><strong><?php esc_html_e( 'This is a private or reserved address.', 'wordfence-access-manager' ); ?></strong> <?php esc_html_e( 'The site is probably behind a proxy, load balancer or CDN, and Wordfence may be seeing the proxy instead of visitors. Check Wordfence → All Options → General Wordfence Options → "How does Wordfence get IPs" before allowlisting anything.', 'wordfence-access-manager' ); ?></p>
-		<?php endif; ?>
-	</div>
+	</section>
 
 	<div id="wfam-notices" class="wfam-notices" aria-live="polite"></div>
 
 	<section class="wfam-card">
-		<h2><?php esc_html_e( 'Blocked IPs', 'wordfence-access-manager' ); ?></h2>
+		<h2><?php esc_html_e( 'Currently locked out', 'wordfence-access-manager' ); ?></h2>
 
 		<form id="wfam-filters" class="wfam-filters" role="search" onsubmit="return false;">
 			<label>
 				<span><?php esc_html_e( 'IP address', 'wordfence-access-manager' ); ?></span>
-				<input type="search" name="ip" maxlength="64" autocomplete="off" placeholder="203.0.113.10">
+				<input type="search" name="ip" maxlength="64" autocomplete="off">
 			</label>
 			<label>
-				<span><?php esc_html_e( 'Username / email', 'wordfence-access-manager' ); ?></span>
+				<span><?php esc_html_e( 'Username / email / member', 'wordfence-access-manager' ); ?></span>
 				<input type="search" name="user" maxlength="100" autocomplete="off">
 			</label>
 			<label>
-				<span><?php esc_html_e( 'Block type', 'wordfence-access-manager' ); ?></span>
-				<select name="type">
-					<option value="all"><?php esc_html_e( 'All types', 'wordfence-access-manager' ); ?></option>
-					<?php foreach ( $type_labels as $type_id => $type_label ) : ?>
-						<option value="<?php echo esc_attr( (string) $type_id ); ?>"><?php echo esc_html( $type_label ); ?></option>
+				<span><?php esc_html_e( 'Cause', 'wordfence-access-manager' ); ?></span>
+				<select name="cause">
+					<?php foreach ( $cause_labels as $cause_key => $cause_label ) : ?>
+						<option value="<?php echo esc_attr( $cause_key ); ?>"><?php echo esc_html( $cause_label ); ?></option>
 					<?php endforeach; ?>
 				</select>
 			</label>
@@ -75,7 +100,7 @@ $wfam_expiry_options = static function () use ( $expiry_labels ) {
 			<label>
 				<span><?php esc_html_e( 'Show', 'wordfence-access-manager' ); ?></span>
 				<select name="member">
-					<option value="all"><?php esc_html_e( 'All blocks', 'wordfence-access-manager' ); ?></option>
+					<option value="all"><?php esc_html_e( 'All lockouts', 'wordfence-access-manager' ); ?></option>
 					<option value="likely"><?php esc_html_e( 'Likely members only', 'wordfence-access-manager' ); ?></option>
 				</select>
 			</label>
@@ -87,14 +112,13 @@ $wfam_expiry_options = static function () use ( $expiry_labels ) {
 				<thead>
 					<tr>
 						<th scope="col"><?php esc_html_e( 'IP address', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Member / user', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Username / email attempted', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Failed logins', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Last attempt', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Block type', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Attempted username / email', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'WordPress user', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Failed attempts', 'wordfence-access-manager' ); ?></th>
 						<th scope="col"><?php esc_html_e( 'Block reason', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Expires', 'wordfence-access-manager' ); ?></th>
-						<th scope="col"><?php esc_html_e( 'Allowlisted', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Blocked at', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Lockout remaining', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Allowlist status', 'wordfence-access-manager' ); ?></th>
 						<th scope="col"><?php esc_html_e( 'Actions', 'wordfence-access-manager' ); ?></th>
 					</tr>
 				</thead>
@@ -110,55 +134,29 @@ $wfam_expiry_options = static function () use ( $expiry_labels ) {
 		</div>
 
 		<p class="description">
-			<?php esc_html_e( '"Likely member" only means an attempted username or email matches a WordPress account. It does not prove the IP belongs to that person; confirm with the user before allowlisting.', 'wordfence-access-manager' ); ?>
+			<?php esc_html_e( '"Failed attempts" counts the failures Wordfence logged from the IP in its counting window before the lockout. "WordPress user" only means an attempted username or email matches an account; it does not prove the IP belongs to that person, so confirm with the user first.', 'wordfence-access-manager' ); ?>
 		</p>
 	</section>
 
-	<div class="wfam-grid">
-		<section class="wfam-card">
-			<h2><?php esc_html_e( 'Add IP to Allowlist', 'wordfence-access-manager' ); ?></h2>
-			<form id="wfam-add-form" class="wfam-add-form" novalidate>
-				<label>
-					<span><?php esc_html_e( 'IP address (single public IP)', 'wordfence-access-manager' ); ?></span>
-					<input type="text" name="ip" required maxlength="45" autocomplete="off" spellcheck="false" placeholder="203.0.113.10">
-				</label>
-				<label>
-					<span><?php esc_html_e( 'Note (optional)', 'wordfence-access-manager' ); ?></span>
-					<input type="text" name="note" maxlength="200" placeholder="<?php esc_attr_e( 'e.g. Jane Doe – head office', 'wordfence-access-manager' ); ?>">
-				</label>
-				<label>
-					<span><?php esc_html_e( 'Expires', 'wordfence-access-manager' ); ?></span>
-					<select name="expiry"><?php $wfam_expiry_options(); ?></select>
-				</label>
-				<label class="wfam-check">
-					<input type="checkbox" name="unblock" value="1" checked>
-					<span><?php esc_html_e( 'Also remove any current block or login lockout for this IP', 'wordfence-access-manager' ); ?></span>
-				</label>
-				<p><button type="submit" class="button button-primary"><?php esc_html_e( 'Add to allowlist', 'wordfence-access-manager' ); ?></button></p>
-				<p class="description"><?php esc_html_e( 'Only allowlist fixed addresses (office, VPN exit). Home and mobile IPs change; if one is reassigned, a stranger inherits the bypass. For those, use Unblock only.', 'wordfence-access-manager' ); ?></p>
-			</form>
-		</section>
-
-		<section class="wfam-card">
-			<h2><?php esc_html_e( 'Added through this helper', 'wordfence-access-manager' ); ?></h2>
-			<div class="wfam-table-wrap" id="wfam-registry-wrap" aria-busy="false">
-				<table class="widefat striped wfam-table" id="wfam-registry">
-					<thead>
-						<tr>
-							<th scope="col"><?php esc_html_e( 'IP', 'wordfence-access-manager' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Note', 'wordfence-access-manager' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Added by', 'wordfence-access-manager' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Added', 'wordfence-access-manager' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Expires', 'wordfence-access-manager' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Actions', 'wordfence-access-manager' ); ?></th>
-						</tr>
-					</thead>
-					<tbody></tbody>
-				</table>
-			</div>
-			<p class="description"><?php esc_html_e( 'Only entries added here can be removed here. Entries added directly in Wordfence are never changed by this helper.', 'wordfence-access-manager' ); ?></p>
-		</section>
-	</div>
+	<section class="wfam-card">
+		<h2><?php esc_html_e( 'Temporary allowlist (added by this helper)', 'wordfence-access-manager' ); ?></h2>
+		<div class="wfam-table-wrap" id="wfam-registry-wrap" aria-busy="false">
+			<table class="widefat striped wfam-table" id="wfam-registry">
+				<thead>
+					<tr>
+						<th scope="col"><?php esc_html_e( 'IP', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Note', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Added by', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Added', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Expires', 'wordfence-access-manager' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Actions', 'wordfence-access-manager' ); ?></th>
+					</tr>
+				</thead>
+				<tbody></tbody>
+			</table>
+		</div>
+		<p class="description"><?php esc_html_e( 'Each entry is removed from the Wordfence allowlist automatically when it expires, after which normal Wordfence protection applies. Entries added directly in the Wordfence settings are never changed by this helper.', 'wordfence-access-manager' ); ?></p>
+	</section>
 
 	<details class="wfam-card wfam-audit">
 		<summary><?php esc_html_e( 'Recent activity (audit log)', 'wordfence-access-manager' ); ?></summary>
@@ -184,17 +182,30 @@ $wfam_expiry_options = static function () use ( $expiry_labels ) {
 			<p class="wfam-dialog-message"></p>
 			<p class="wfam-dialog-warning notice notice-warning inline" hidden></p>
 			<div class="wfam-dialog-fields" hidden>
+				<fieldset>
+					<legend><?php esc_html_e( 'Allowlist for', 'wordfence-access-manager' ); ?></legend>
+					<div class="wfam-expiry-choices">
+						<?php foreach ( $expiry_labels as $value => $label ) : ?>
+							<label class="wfam-radio">
+								<input type="radio" name="expiry" value="<?php echo esc_attr( $value ); ?>" <?php checked( $value, '1h' ); ?>>
+								<span><?php echo esc_html( $label ); ?></span>
+							</label>
+						<?php endforeach; ?>
+					</div>
+				</fieldset>
+				<label class="wfam-custom" hidden>
+					<span><?php esc_html_e( 'Expires at (your local time)', 'wordfence-access-manager' ); ?></span>
+					<input type="datetime-local" name="custom">
+				</label>
+				<p class="wfam-expiry-preview description"></p>
 				<label>
 					<span><?php esc_html_e( 'Note (optional)', 'wordfence-access-manager' ); ?></span>
-					<input type="text" name="note" maxlength="200">
-				</label>
-				<label>
-					<span><?php esc_html_e( 'Expires', 'wordfence-access-manager' ); ?></span>
-					<select name="expiry"><?php $wfam_expiry_options(); ?></select>
+					<input type="text" name="note" maxlength="200" placeholder="<?php esc_attr_e( 'e.g. Jane Doe called support', 'wordfence-access-manager' ); ?>">
 				</label>
 			</div>
+			<p class="wfam-dialog-error notice notice-error inline" hidden></p>
 			<div class="wfam-dialog-buttons">
-				<button type="submit" value="cancel" class="button"><?php esc_html_e( 'Cancel', 'wordfence-access-manager' ); ?></button>
+				<button type="submit" value="cancel" class="button" formnovalidate><?php esc_html_e( 'Cancel', 'wordfence-access-manager' ); ?></button>
 				<button type="submit" value="confirm" class="button button-primary"><?php esc_html_e( 'Confirm', 'wordfence-access-manager' ); ?></button>
 			</div>
 		</form>

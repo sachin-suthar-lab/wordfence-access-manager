@@ -1,7 +1,7 @@
 <?php
 /**
- * Bootstrap, WP-Cron expiry and the three shared operations (unblock,
- * allowlist, remove) used by both the admin AJAX handlers and cron.
+ * Bootstrap, temporary-allowlist expiry, and the shared operations (unblock,
+ * unblock + temporary allowlist, remove) used by the AJAX handlers and cron.
  *
  * @package Wordfence_Access_Manager
  */
@@ -10,7 +10,14 @@ defined( 'ABSPATH' ) || exit;
 
 class WFAM_Plugin {
 
+	/** Hourly safety-net sweep. */
 	const CRON_HOOK = 'wfam_purge_expired';
+
+	/** Single event scheduled at the next expiry time. */
+	const DUE_HOOK = 'wfam_expire_due';
+
+	/** Short lock so concurrent requests don't purge at the same time. */
+	const PURGE_LOCK = 'wfam_purging';
 
 	/**
 	 * Registers hooks. Wordfence availability is only checked inside hooks,
@@ -20,6 +27,8 @@ class WFAM_Plugin {
 	 */
 	public static function init() {
 		add_action( self::CRON_HOOK, array( __CLASS__, 'purge_expired' ) );
+		add_action( self::DUE_HOOK, array( __CLASS__, 'purge_expired' ) );
+		add_action( 'init', array( __CLASS__, 'maybe_purge_due' ), 20 );
 		add_action( 'admin_init', array( __CLASS__, 'ensure_cron' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'unavailable_notice' ) );
 
@@ -29,7 +38,7 @@ class WFAM_Plugin {
 	}
 
 	/**
-	 * Activation: schedule the hourly expiry check.
+	 * Activation: schedule the hourly sweep and the next due expiry.
 	 *
 	 * @return void
 	 */
@@ -37,27 +46,53 @@ class WFAM_Plugin {
 		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', self::CRON_HOOK );
 		}
+		self::schedule_due_event();
 	}
 
 	/**
-	 * Deactivation: stop the expiry check. Helper-added IPs stay in the
-	 * Wordfence allowlist (nothing is removed silently); their expiry resumes
-	 * if the plugin is re-activated.
+	 * Deactivation: stop the cron events AND remove every helper-created
+	 * allowlist entry from Wordfence, because once the plugin is inactive
+	 * nothing would expire them (they would silently become permanent).
 	 *
 	 * @return void
 	 */
 	public static function deactivate() {
 		wp_clear_scheduled_hook( self::CRON_HOOK );
+		wp_clear_scheduled_hook( self::DUE_HOOK );
+
+		if ( ! WFAM_Wordfence::is_available() ) {
+			return; // Registry kept; entries are removed on re-activation once due.
+		}
+		foreach ( array_keys( WFAM_Store::registry() ) as $ip ) {
+			self::remove_allowlisted_ip( $ip, 'deactivated' );
+		}
 	}
 
 	/**
-	 * Re-schedules the cron event if it went missing (e.g. cron option reset).
+	 * Re-schedules the cron events if they went missing.
 	 *
 	 * @return void
 	 */
 	public static function ensure_cron() {
 		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
-			self::activate();
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', self::CRON_HOOK );
+		}
+		if ( WFAM_Store::next_expiry() && ! wp_next_scheduled( self::DUE_HOOK ) ) {
+			self::schedule_due_event();
+		}
+	}
+
+	/**
+	 * Runs on every request (init): if a helper allowlist entry is due, remove
+	 * it now. Costs one autoloaded option read when nothing is due, and makes
+	 * expiry happen on time even when WP-Cron is disabled or delayed.
+	 *
+	 * @return void
+	 */
+	public static function maybe_purge_due() {
+		$next = WFAM_Store::next_expiry();
+		if ( $next > 0 && $next <= time() ) {
+			self::purge_expired();
 		}
 	}
 
@@ -78,24 +113,23 @@ class WFAM_Plugin {
 			return;
 		}
 
-		$missing = WFAM_Wordfence::missing_requirements();
 		printf(
 			'<div class="notice notice-warning"><p><strong>%1$s</strong> %2$s</p><p><code>%3$s</code></p></div>',
 			esc_html__( 'Wordfence Access Manager is inactive.', 'wordfence-access-manager' ),
 			esc_html__( 'Wordfence is not active, or this Wordfence version does not provide the functions the helper needs. No actions are available until this is resolved.', 'wordfence-access-manager' ),
-			esc_html( implode( ', ', $missing ) )
+			esc_html( implode( ', ', WFAM_Wordfence::missing_requirements() ) )
 		);
 	}
 
 	/**
-	 * Unblocks one IP (all block/lockout rows + failed-login counters) and
-	 * syncs the firewall.
+	 * Ends one IP's login lockout (Wordfence unlock + counter reset) and syncs
+	 * the firewall. Does not allowlist.
 	 *
-	 * @param string $ip Canonical public IP.
+	 * @param string $ip Canonical IP.
 	 * @return array{synced:bool}
 	 */
 	public static function unblock_ip( $ip ) {
-		WFAM_Wordfence::unblock( $ip );
+		WFAM_Wordfence::unlock( $ip );
 		$synced = WFAM_Wordfence::sync_firewall();
 
 		WFAM_Store::audit( 'unblock', $ip, $synced ? '' : 'firewall sync deferred to next request' );
@@ -104,52 +138,49 @@ class WFAM_Plugin {
 	}
 
 	/**
-	 * Adds one IP to the Wordfence allowlist (optionally unblocking it first),
-	 * records it as helper-owned, and syncs the firewall once.
+	 * Ends the lockout and allowlists the IP until $expires_at.
 	 *
-	 * If an existing Wordfence entry already covers the IP, nothing is added
-	 * and the IP is NOT recorded as helper-owned, so "Remove" can never delete
-	 * an entry the helper did not create.
+	 * - Not covered by any allowlist entry: added via Wordfence and recorded as
+	 *   helper-owned with the expiry.
+	 * - Already helper-owned: the expiry is replaced with the new one.
+	 * - Covered by an entry the admin added in Wordfence: nothing is added or
+	 *   recorded (so the helper can never remove that entry); only unlocked.
 	 *
 	 * @param string $ip         Canonical public IP.
 	 * @param string $note       Sanitized note.
-	 * @param string $expiry_key One of WFAM_Store::expiry_choices() keys.
-	 * @param bool   $unblock    Also unblock the IP.
-	 * @return array{status:string, synced:bool}|WP_Error status is 'added' or 'exists'.
+	 * @param int    $expires_at Unix timestamp (validated by WFAM_Store::resolve_expiry()).
+	 * @return array{status:string, synced:bool}|WP_Error status: 'added' | 'extended' | 'exists'.
 	 */
-	public static function allowlist_ip( $ip, $note, $expiry_key, $unblock ) {
-		$choices = WFAM_Store::expiry_choices();
-		if ( ! isset( $choices[ $expiry_key ] ) ) {
-			return new WP_Error( 'wfam_bad_expiry', __( 'Choose a valid expiry.', 'wordfence-access-manager' ) );
+	public static function unblock_and_allowlist( $ip, $note, $expires_at ) {
+		WFAM_Wordfence::unlock( $ip );
+
+		$registry = WFAM_Store::registry();
+		if ( isset( $registry[ $ip ] ) && WFAM_Wordfence::is_allowlisted( $ip ) ) {
+			$status = 'extended';
+		} else {
+			$status = WFAM_Wordfence::add_to_allowlist( $ip );
 		}
 
-		if ( $unblock ) {
-			WFAM_Wordfence::unblock( $ip );
-		}
-
-		$status = WFAM_Wordfence::add_to_allowlist( $ip );
 		if ( is_wp_error( $status ) ) {
-			if ( $unblock ) {
-				WFAM_Wordfence::sync_firewall();
-				WFAM_Store::audit( 'unblock', $ip, 'allowlist step failed: ' . $status->get_error_message() );
-			}
+			WFAM_Wordfence::sync_firewall();
+			WFAM_Store::audit( 'unblock', $ip, 'allowlist step failed: ' . $status->get_error_message() );
 			return $status;
 		}
 
-		if ( 'added' === $status ) {
-			$expires_at = $choices[ $expiry_key ] ? time() + $choices[ $expiry_key ] : 0;
+		if ( 'exists' !== $status ) {
 			WFAM_Store::add_entry( $ip, $note, $expires_at );
+			self::schedule_due_event();
 		}
 
 		$synced = WFAM_Wordfence::sync_firewall();
 
-		$details = ( 'added' === $status )
-			? sprintf( 'expiry: %s; note: %s', $expiry_key, $note )
-			: 'already covered by an existing Wordfence allowlist entry; not added';
+		$details = ( 'exists' === $status )
+			? 'already covered by an existing Wordfence allowlist entry; not added'
+			: sprintf( 'until %s UTC%s', gmdate( 'Y-m-d H:i', $expires_at ), '' !== $note ? '; note: ' . $note : '' );
 		if ( ! $synced ) {
 			$details .= '; firewall sync deferred to next request';
 		}
-		WFAM_Store::audit( $unblock ? 'unblock_allowlist' : 'allowlist_add', $ip, $details );
+		WFAM_Store::audit( 'extended' === $status ? 'allowlist_extended' : 'unblock_allowlist', $ip, $details );
 
 		return array(
 			'status' => $status,
@@ -162,7 +193,7 @@ class WFAM_Plugin {
 	 * Refuses IPs the helper did not add.
 	 *
 	 * @param string $ip     Canonical IP.
-	 * @param string $reason 'manual' or 'expired' (for the audit log).
+	 * @param string $reason 'manual' | 'expired' | 'deactivated' (for the audit log).
 	 * @return array{removed:bool, synced:bool}|WP_Error
 	 */
 	public static function remove_allowlisted_ip( $ip, $reason = 'manual' ) {
@@ -174,10 +205,18 @@ class WFAM_Plugin {
 		// False here just means someone already removed it in Wordfence.
 		$removed = WFAM_Wordfence::remove_from_allowlist( $ip );
 		WFAM_Store::remove_entry( $ip );
+		self::schedule_due_event();
 		$synced = WFAM_Wordfence::sync_firewall();
 
-		$details = $removed ? $reason : $reason . '; entry was already gone from Wordfence';
-		WFAM_Store::audit( 'expired' === $reason ? 'allowlist_expired' : 'allowlist_remove', $ip, $details );
+		$actions = array(
+			'expired'     => 'allowlist_expired',
+			'deactivated' => 'allowlist_deactivated',
+		);
+		WFAM_Store::audit(
+			isset( $actions[ $reason ] ) ? $actions[ $reason ] : 'allowlist_remove',
+			$ip,
+			$removed ? $reason : $reason . '; entry was already gone from Wordfence'
+		);
 
 		return array(
 			'removed' => $removed,
@@ -186,26 +225,43 @@ class WFAM_Plugin {
 	}
 
 	/**
-	 * WP-Cron callback (hourly): removes helper-added entries whose expiry has
-	 * passed. Also run when the admin screen loads its data, so expiry still
-	 * happens even if cron is delayed.
+	 * Removes every helper allowlist entry whose expiry has passed. Called by
+	 * the due-time cron event, the hourly sweep, maybe_purge_due() and the
+	 * admin list endpoint.
 	 *
 	 * @return int Number of entries removed.
 	 */
 	public static function purge_expired() {
-		if ( ! WFAM_Wordfence::is_available() ) {
-			return 0; // Keep the registry; retry once Wordfence is back.
+		if ( ! WFAM_Wordfence::is_available() || get_transient( self::PURGE_LOCK ) ) {
+			return 0; // Wordfence missing: keep the registry and retry later.
 		}
+		set_transient( self::PURGE_LOCK, 1, MINUTE_IN_SECONDS );
 
 		$count = 0;
 		foreach ( WFAM_Store::registry() as $ip => $entry ) {
-			if ( ! empty( $entry['expires_at'] ) && (int) $entry['expires_at'] <= time() ) {
+			if ( (int) $entry['expires_at'] > 0 && (int) $entry['expires_at'] <= time() ) {
 				if ( ! is_wp_error( self::remove_allowlisted_ip( $ip, 'expired' ) ) ) {
 					$count++;
 				}
 			}
 		}
 
+		delete_transient( self::PURGE_LOCK );
 		return $count;
+	}
+
+	/**
+	 * (Re)schedules the single cron event for the earliest pending expiry.
+	 * Past-due entries are not scheduled: maybe_purge_due() removes them on
+	 * the very next request.
+	 *
+	 * @return void
+	 */
+	private static function schedule_due_event() {
+		wp_clear_scheduled_hook( self::DUE_HOOK );
+		$next = WFAM_Store::next_expiry();
+		if ( $next > time() ) {
+			wp_schedule_single_event( $next, self::DUE_HOOK );
+		}
 	}
 }
